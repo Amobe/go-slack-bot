@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 
 	"github.com/amobe/go-slack-bot/slack"
@@ -12,12 +13,11 @@ func main() {
 
 func mainWithCode() int {
 	var (
-		tokenID    = ""
-		botID      = ""
-		channelIDs = []string{""}
+		tokenID = "REPLACE_BY_YOUR_TOKEN"
 	)
 
-	slack.StartSlackBot(tokenID, botID, channelIDs...)
+	err := slack.StartSlackBot(tokenID)
+	log.Printf("[Error] fail to start slack bot: %v", err)
 
 	return 0
 }

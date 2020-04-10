@@ -15,44 +15,62 @@ var (
 	ErrInvalidCommand = fmt.Errorf("invalid command")
 )
 
-type Client struct {
-	tokenID       string
-	botID         string
-	validChannels []string
-	rtm           *slack.RTM
-	stopClient    chan bool
-	isClosed      chan struct{}
-	isClosedSync  *sync.Once
+type BotClient struct {
+	tokenID      string
+	botID        string
+	atBotID      string
+	api          *slack.Client
+	rtm          *slack.RTM
+	stopClient   chan bool
+	isClosed     chan struct{}
+	isClosedSync *sync.Once
 }
 
-func NewClient(tokenID, botID string, channelIDs ...string) *Client {
-	c := &Client{
-		tokenID:      tokenID,
-		botID:        botID,
+func NewBotClient(tokenID string) *BotClient {
+	c := &BotClient{
 		stopClient:   make(chan bool),
 		isClosed:     make(chan struct{}),
 		isClosedSync: &sync.Once{},
 	}
-	for _, cid := range channelIDs {
-		c.validChannels = append(c.validChannels, cid)
-	}
-
-	api := slack.New(c.tokenID)
-	c.rtm = api.NewRTM()
+	c.api = slack.New(tokenID)
+	c.rtm = c.api.NewRTM()
 	return c
 }
 
-func (c *Client) Start() {
+func (c *BotClient) requestBotID() (string, error) {
+	resp, err := c.api.AuthTest()
+	if err != nil {
+		return "", fmt.Errorf("fail to auth: %w", err)
+	}
+	return resp.UserID, nil
+}
+
+func (c *BotClient) setBotID(botID string) {
+	c.botID = botID
+	c.atBotID = fmt.Sprintf("<@%s>", botID)
+}
+
+func (c *BotClient) Init() error {
+	botID, err := c.requestBotID()
+	if err != nil {
+		return fmt.Errorf("fail to request bot id: %w", err)
+	}
+	c.setBotID(botID)
+	return nil
+}
+
+func (c *BotClient) Start() {
 	go c.rtm.ManageConnection()
 	for msg := range c.rtm.IncomingEvents {
 		switch ev := msg.Data.(type) {
 		case *slack.MessageEvent:
-			if !c.ValidateMessageEvent(ev.Msg.Text, ev.Channel, ev.BotID) {
+			text := ev.Msg.Text
+			if !c.ValidateMessageEvent(text, ev.Channel) {
 				continue
 			}
-			resp, err := c.ParseMessage(ev.Msg.Text, ev.Channel)
+			resp, err := c.ParseMessage(text, ev.Channel)
 			if err != nil {
-				log.Printf("[Error] Fail to handle message: %v", err)
+				log.Printf("[Error] message: %s, err: %v", text, err)
 				continue
 			}
 			c.rtm.SendMessage(c.rtm.NewOutgoingMessage(resp, ev.Channel))
@@ -60,13 +78,13 @@ func (c *Client) Start() {
 	}
 }
 
-func (c *Client) close() {
+func (c *BotClient) close() {
 	c.isClosedSync.Do(func() {
 		close(c.isClosed)
 	})
 }
 
-func (c *Client) Close() error {
+func (c *BotClient) Close() error {
 	select {
 	case c.stopClient <- true:
 		c.close()
@@ -79,38 +97,21 @@ func (c *Client) Close() error {
 	}
 }
 
-func (c *Client) ValidateMessageEvent(text, channelID, botID string) bool {
-	if !c.validateChannel(channelID) {
-		log.Printf("invlid channel, cid: %s, msg: %s", channelID, text)
-		return false
-	}
-	if !strings.HasPrefix(text, botID) {
-		log.Printf("not to bot, bid: %s, msg: %s", botID, text)
-		return false
-	}
-	return true
+func (c *BotClient) ValidateMessageEvent(text, channelID string) bool {
+	return strings.HasPrefix(text, c.atBotID)
 }
 
-func (c *Client) validateChannel(channelID string) bool {
-	for _, cid := range c.validChannels {
-		if cid == channelID {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *Client) ParseMessage(text, channelID string) (string, error) {
-	msg := strings.Split(strings.TrimSpace(text), " ")
+func (c *BotClient) ParseMessage(text, channelID string) (string, error) {
+	msg := strings.Split(strings.TrimSpace(text), " ")[1:]
 	if len(msg) == 0 {
 		return "", ErrInvalidMessage
 	}
 	cmd := _BotCmd(msg[0])
 	switch cmd {
 	case _MsgIDCmd:
-		return handleMsgID(msg[1]), nil
+		return handleMsgID(msg[1])
 	case _HelpCmd:
-		return handleHelp(), nil
+		return handleHelp()
 	}
 	return "", ErrInvalidCommand
 }
